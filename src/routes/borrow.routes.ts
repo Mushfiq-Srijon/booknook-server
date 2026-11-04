@@ -2,22 +2,34 @@
 import { Router } from "express";
 import { ObjectId } from "mongodb";
 import { getDB } from "../config/db";
+import {
+    authenticate,
+    AuthenticatedRequest,
+} from "../middleware/auth.middleware";
 
 const router = Router();
 
-router.post("/", async (req, res) => {
+// Borrow a book
+router.post("/", authenticate, async (req, res) => {
     try {
-        const { bookId, userEmail } = req.body;
+        const user = (req as AuthenticatedRequest).auth;
+
+        if (!user) {
+            return res.status(401).json({
+                success: false,
+                message: "Authentication required.",
+            });
+        }
+
+        const { bookId } = req.body;
 
         if (
             typeof bookId !== "string" ||
-            !ObjectId.isValid(bookId) ||
-            typeof userEmail !== "string" ||
-            !userEmail.trim()
+            !ObjectId.isValid(bookId)
         ) {
             return res.status(400).json({
                 success: false,
-                message: "Please provide a valid book ID and user email.",
+                message: "Please provide a valid book ID.",
             });
         }
 
@@ -30,6 +42,7 @@ router.post("/", async (req, res) => {
             { unique: true }
         );
 
+        const normalizedEmail = user.email.trim().toLowerCase();
         const bookObjectId = new ObjectId(bookId);
 
         const book = await booksCollection.findOne({
@@ -42,8 +55,6 @@ router.post("/", async (req, res) => {
                 message: "Book not found.",
             });
         }
-
-        const normalizedEmail = userEmail.trim().toLowerCase();
 
         const existingBorrow = await borrowsCollection.findOne({
             bookId,
@@ -84,6 +95,7 @@ router.post("/", async (req, res) => {
             bookId,
             bookTitle: updatedBook.title,
             bookImage: updatedBook.imageUrl,
+            userId: user.userId,
             userEmail: normalizedEmail,
             borrowDate,
             returnDate,
@@ -92,7 +104,7 @@ router.post("/", async (req, res) => {
         try {
             const result = await borrowsCollection.insertOne(newBorrow);
 
-            res.status(201).json({
+            return res.status(201).json({
                 success: true,
                 message: "Book borrowed successfully.",
                 data: {
@@ -128,18 +140,28 @@ router.post("/", async (req, res) => {
     } catch (error) {
         console.error("Error borrowing book:", error);
 
-        res.status(500).json({
+        return res.status(500).json({
             success: false,
             message: "Failed to borrow book.",
         });
     }
 });
 
-router.get("/", async (req, res) => {
+// Get only the logged-in user's borrowing records
+router.get("/", authenticate, async (req, res) => {
     try {
+        const user = (req as AuthenticatedRequest).auth;
+
+        if (!user) {
+            return res.status(401).json({
+                success: false,
+                message: "Authentication required.",
+            });
+        }
+
         const borrows = await getDB()
             .collection("borrows")
-            .find({})
+            .find({ userId: user.userId })
             .sort({ borrowDate: -1 })
             .toArray();
 
@@ -156,7 +178,7 @@ router.get("/", async (req, res) => {
                     : borrow.returnDate,
         }));
 
-        res.status(200).json({
+        return res.status(200).json({
             success: true,
             count: formattedBorrows.length,
             data: formattedBorrows,
@@ -164,18 +186,28 @@ router.get("/", async (req, res) => {
     } catch (error) {
         console.error("Error fetching borrows:", error);
 
-        res.status(500).json({
+        return res.status(500).json({
             success: false,
             message: "Failed to fetch borrowing records.",
         });
     }
 });
 
-router.delete("/:id", async (req, res) => {
+// Return only the logged-in user's borrowed book
+router.delete("/:id", authenticate, async (req, res) => {
     try {
-        const { id } = req.params;
+        const user = (req as AuthenticatedRequest).auth;
 
-        if (!ObjectId.isValid(id)) {
+        if (!user) {
+            return res.status(401).json({
+                success: false,
+                message: "Authentication required.",
+            });
+        }
+
+        const id = req.params.id;
+
+        if (typeof id !== "string" || !ObjectId.isValid(id)) {
             return res.status(400).json({
                 success: false,
                 message: "Invalid borrow ID.",
@@ -186,8 +218,36 @@ router.delete("/:id", async (req, res) => {
         const borrowsCollection = database.collection("borrows");
         const booksCollection = database.collection("books");
 
+        const borrowObjectId = new ObjectId(id);
+
+        const existingBorrow = await borrowsCollection.findOne({
+            _id: borrowObjectId,
+            userId: user.userId,
+        });
+
+        if (!existingBorrow) {
+            return res.status(404).json({
+                success: false,
+                message: "Borrowing record not found.",
+            });
+        }
+
+        const bookObjectId = new ObjectId(existingBorrow.bookId);
+
+        const book = await booksCollection.findOne({
+            _id: bookObjectId,
+        });
+
+        if (!book) {
+            return res.status(404).json({
+                success: false,
+                message: "The borrowed book no longer exists.",
+            });
+        }
+
         const deletedBorrow = await borrowsCollection.findOneAndDelete({
-            _id: new ObjectId(id),
+            _id: borrowObjectId,
+            userId: user.userId,
         });
 
         if (!deletedBorrow) {
@@ -197,29 +257,22 @@ router.delete("/:id", async (req, res) => {
             });
         }
 
-        const bookUpdate = await booksCollection.updateOne(
-            { _id: new ObjectId(deletedBorrow.bookId) },
+        await booksCollection.updateOne(
+            { _id: bookObjectId },
             {
                 $inc: { availableCopies: 1 },
                 $set: { updatedAt: new Date() },
             }
         );
 
-        if (bookUpdate.matchedCount === 0) {
-            return res.status(404).json({
-                success: false,
-                message: "The borrowed book no longer exists.",
-            });
-        }
-
-        res.status(200).json({
+        return res.status(200).json({
             success: true,
             message: "Book returned successfully.",
         });
     } catch (error) {
         console.error("Error returning book:", error);
 
-        res.status(500).json({
+        return res.status(500).json({
             success: false,
             message: "Failed to return book.",
         });
