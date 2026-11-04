@@ -1,9 +1,23 @@
+
 import { Router } from "express";
 import { ObjectId } from "mongodb";
 import { getDB } from "../config/db";
+import {
+    authenticate,
+    AuthenticatedRequest,
+} from "../middleware/auth.middleware";
 
 const router = Router();
 
+const validCategories = [
+    "Fiction",
+    "Science",
+    "History",
+    "Kids",
+    "Others",
+];
+
+// GET ALL BOOKS - Public
 router.get("/", async (req, res) => {
     try {
         const books = await getDB()
@@ -41,8 +55,19 @@ router.get("/", async (req, res) => {
 });
 
 
-router.post("/", async (req, res) => {
+// ADD BOOK - Login required
+router.post("/", authenticate, async (req, res) => {
     try {
+        const authenticatedReq = req as AuthenticatedRequest;
+        const user = authenticatedReq.auth;
+
+        if (!user) {
+            return res.status(401).json({
+                success: false,
+                message: "Authentication required.",
+            });
+        }
+
         const {
             title,
             author,
@@ -53,11 +78,15 @@ router.post("/", async (req, res) => {
         } = req.body;
 
         if (
-            !title ||
-            !author ||
-            !category ||
-            !imageUrl ||
-            !description ||
+            typeof title !== "string" ||
+            !title.trim() ||
+            typeof author !== "string" ||
+            !author.trim() ||
+            typeof category !== "string" ||
+            typeof imageUrl !== "string" ||
+            !imageUrl.trim() ||
+            typeof description !== "string" ||
+            !description.trim() ||
             !Number.isInteger(totalCopies) ||
             totalCopies < 1
         ) {
@@ -66,14 +95,6 @@ router.post("/", async (req, res) => {
                 message: "Please provide all required book information.",
             });
         }
-
-        const validCategories = [
-            "Fiction",
-            "Science",
-            "History",
-            "Kids",
-            "Others",
-        ];
 
         if (!validCategories.includes(category)) {
             return res.status(400).json({
@@ -91,8 +112,9 @@ router.post("/", async (req, res) => {
             totalCopies,
             availableCopies: totalCopies,
             addedBy: {
-                name: "Pending authentication",
-                email: "pending-auth@booknook.local",
+                userId: user.userId,
+                name: user.name,
+                email: user.email,
             },
             createdAt: new Date(),
             updatedAt: new Date(),
@@ -123,11 +145,12 @@ router.post("/", async (req, res) => {
 });
 
 
+// GET SINGLE BOOK - Public
 router.get("/:id", async (req, res) => {
     try {
-        const { id } = req.params;
+        const id = req.params.id;
 
-        if (!ObjectId.isValid(id)) {
+        if (typeof id !== "string" || !ObjectId.isValid(id)) {
             return res.status(400).json({
                 success: false,
                 message: "Invalid book ID.",
@@ -171,11 +194,21 @@ router.get("/:id", async (req, res) => {
 });
 
 
-router.patch("/:id", async (req, res) => {
+// UPDATE BOOK - Owner only
+router.patch("/:id", authenticate, async (req, res) => {
     try {
-        const { id } = req.params;
+        const authenticatedReq = req as AuthenticatedRequest;
+        const user = authenticatedReq.auth;
+        const id = req.params.id;
 
-        if (!ObjectId.isValid(id)) {
+        if (!user) {
+            return res.status(401).json({
+                success: false,
+                message: "Authentication required.",
+            });
+        }
+
+        if (typeof id !== "string" || !ObjectId.isValid(id)) {
             return res.status(400).json({
                 success: false,
                 message: "Invalid book ID.",
@@ -190,14 +223,6 @@ router.patch("/:id", async (req, res) => {
             description,
             totalCopies,
         } = req.body;
-
-        const allowedCategories = [
-            "Fiction",
-            "Science",
-            "History",
-            "Kids",
-            "Others",
-        ];
 
         const updates: {
             title?: string;
@@ -235,7 +260,10 @@ router.patch("/:id", async (req, res) => {
         }
 
         if (category !== undefined) {
-            if (!allowedCategories.includes(category)) {
+            if (
+                typeof category !== "string" ||
+                !validCategories.includes(category)
+            ) {
                 return res.status(400).json({
                     success: false,
                     message: "Invalid book category.",
@@ -257,10 +285,7 @@ router.patch("/:id", async (req, res) => {
         }
 
         if (description !== undefined) {
-            if (
-                typeof description !== "string" ||
-                !description.trim()
-            ) {
+            if (typeof description !== "string" || !description.trim()) {
                 return res.status(400).json({
                     success: false,
                     message: "Invalid book description.",
@@ -272,15 +297,17 @@ router.patch("/:id", async (req, res) => {
 
         const database = getDB();
         const booksCollection = database.collection("books");
+        const bookObjectId = new ObjectId(id);
 
         const existingBook = await booksCollection.findOne({
-            _id: new ObjectId(id),
+            _id: bookObjectId,
+            "addedBy.userId": user.userId,
         });
 
         if (!existingBook) {
             return res.status(404).json({
                 success: false,
-                message: "Book not found.",
+                message: "Book not found or you are not its owner.",
             });
         }
 
@@ -302,7 +329,8 @@ router.patch("/:id", async (req, res) => {
             if (totalCopies < borrowedCopies) {
                 return res.status(400).json({
                     success: false,
-                    message: "Total copies cannot be less than currently borrowed copies.",
+                    message:
+                        "Total copies cannot be less than currently borrowed copies.",
                 });
             }
 
@@ -311,7 +339,10 @@ router.patch("/:id", async (req, res) => {
         }
 
         const updatedBook = await booksCollection.findOneAndUpdate(
-            { _id: new ObjectId(id) },
+            {
+                _id: bookObjectId,
+                "addedBy.userId": user.userId,
+            },
             { $set: updates },
             { returnDocument: "after" }
         );
@@ -319,7 +350,7 @@ router.patch("/:id", async (req, res) => {
         if (!updatedBook) {
             return res.status(404).json({
                 success: false,
-                message: "Book not found.",
+                message: "Book not found or you are not its owner.",
             });
         }
 
@@ -350,27 +381,64 @@ router.patch("/:id", async (req, res) => {
 });
 
 
-router.delete("/:id", async (req, res) => {
+// DELETE BOOK - Owner only
+router.delete("/:id", authenticate, async (req, res) => {
     try {
-        const { id } = req.params;
+        const authenticatedReq = req as AuthenticatedRequest;
+        const user = authenticatedReq.auth;
+        const id = req.params.id;
+        if (!user) {
+            return res.status(401).json({
+                success: false,
+                message: "Authentication required.",
+            });
+        }
 
-        if (!ObjectId.isValid(id)) {
+        if (typeof id !== "string" || !ObjectId.isValid(id)) {
             return res.status(400).json({
                 success: false,
                 message: "Invalid book ID.",
             });
         }
 
-        const result = await getDB()
-            .collection("books")
-            .deleteOne({
-                _id: new ObjectId(id),
+        const database = getDB();
+        const booksCollection = database.collection("books");
+        const borrowsCollection = database.collection("borrows");
+        const bookObjectId = new ObjectId(id);
+
+        const existingBook = await booksCollection.findOne({
+            _id: bookObjectId,
+            "addedBy.userId": user.userId,
+        });
+
+        if (!existingBook) {
+            return res.status(404).json({
+                success: false,
+                message: "Book not found or you are not its owner.",
             });
+        }
+
+        const activeBorrow = await borrowsCollection.findOne({
+            bookId: id,
+        });
+
+        if (activeBorrow) {
+            return res.status(409).json({
+                success: false,
+                message:
+                    "This book cannot be deleted while it has active borrowing records.",
+            });
+        }
+
+        const result = await booksCollection.deleteOne({
+            _id: bookObjectId,
+            "addedBy.userId": user.userId,
+        });
 
         if (result.deletedCount === 0) {
             return res.status(404).json({
                 success: false,
-                message: "Book not found.",
+                message: "Book not found or you are not its owner.",
             });
         }
 
@@ -387,6 +455,5 @@ router.delete("/:id", async (req, res) => {
         });
     }
 });
-
 
 export default router;
