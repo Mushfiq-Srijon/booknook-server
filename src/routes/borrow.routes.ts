@@ -161,7 +161,7 @@ router.get("/", authenticate, async (req, res) => {
 
         const borrows = await getDB()
             .collection("borrows")
-            .find({ userId: user.userId })
+            .find({ $or: [{ userId: user.userId }, { userEmail: user.email.trim().toLowerCase() }] })
             .sort({ borrowDate: -1 })
             .toArray();
 
@@ -222,7 +222,7 @@ router.delete("/:id", authenticate, async (req, res) => {
 
         const existingBorrow = await borrowsCollection.findOne({
             _id: borrowObjectId,
-            userId: user.userId,
+            $or: [{ userId: user.userId }, { userEmail: user.email.trim().toLowerCase() }],
         });
 
         if (!existingBorrow) {
@@ -247,7 +247,7 @@ router.delete("/:id", authenticate, async (req, res) => {
 
         const deletedBorrow = await borrowsCollection.findOneAndDelete({
             _id: borrowObjectId,
-            userId: user.userId,
+            $or: [{ userId: user.userId }, { userEmail: user.email.trim().toLowerCase() }],
         });
 
         if (!deletedBorrow) {
