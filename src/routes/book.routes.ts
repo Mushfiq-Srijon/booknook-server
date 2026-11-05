@@ -20,11 +20,36 @@ const validCategories = [
 // GET ALL BOOKS - Public
 router.get("/", async (req, res) => {
     try {
-        const books = await getDB()
+        const { email, userId, limit, category, search } = req.query;
+        const filter: any = {};
+
+        if (email && typeof email === "string" && email.trim()) {
+            filter["addedBy.email"] = { $regex: new RegExp("^" + email.trim() + "$", "i") };
+        } else if (userId && typeof userId === "string" && userId.trim()) {
+            filter["addedBy.userId"] = userId.trim();
+        }
+
+        if (category && typeof category === "string" && category !== "All") {
+            filter.category = category;
+        }
+
+        if (search && typeof search === "string" && search.trim()) {
+            filter.$or = [
+                { title: { $regex: search.trim(), $options: "i" } },
+                { author: { $regex: search.trim(), $options: "i" } },
+            ];
+        }
+
+        let cursor = getDB()
             .collection("books")
-            .find({})
-            .sort({ createdAt: -1 })
-            .toArray();
+            .find(filter)
+            .sort({ createdAt: -1 });
+
+        if (limit && !isNaN(Number(limit))) {
+            cursor = cursor.limit(Number(limit));
+        }
+
+        const books = await cursor.toArray();
 
         const formattedBooks = books.map((book) => ({
             ...book,
